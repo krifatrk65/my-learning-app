@@ -39,13 +39,36 @@
         input[name="paymentMethod"]:checked + .payment-radio-label {
             @apply bg-pink-600 text-white shadow-lg shadow-pink-500/30;
         }
+
+        /* --- Custom Modal Styling --- */
+        .modal {
+            @apply fixed inset-0 bg-black bg-opacity-70 z-50 flex items-center justify-center transition-opacity duration-300 ease-out;
+        }
+        .modal-content {
+            @apply bg-slate-800 p-8 rounded-xl shadow-2xl border-t-4 border-indigo-500 max-w-sm w-full;
+        }
     </style>
 </head>
 <body class="min-h-screen flex flex-col">
 
     <!-- Global State and Data -->
-    <script>
-        // --- MOCK COURSE DATA ---
+    <script type="module">
+        // --- FIREBASE IMPORTS ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc, getDocs, collection, query, where, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // --- GLOBAL VARIABLES (Provided by Canvas) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let userId = 'guest'; // Default user ID
+        let firestoreDocRef;
+        let isAuthReady = false;
+
+        // --- MOCK COURSE DATA (Kept the same) ---
         const MOCK_COURSES = {
             'CBSE': {
                 'Class VII': {
@@ -53,18 +76,6 @@
                         'Chapter 1: Heat': [
                             { id: 1, title: '1. Temperature and Measurement (Free)', duration: '10:00', free: true },
                             { id: 2, title: '2. Transfer of Heat', duration: '15:00', free: false },
-                        ],
-                    },
-                    'Chemistry': {
-                        'Chapter 1: Acids, Bases, and Salts': [
-                            { id: 1, title: '1. Introduction to Indicators (Free)', duration: '12:00', free: true },
-                            { id: 2, title: '2. Neutralization Reactions', duration: '18:00', free: false },
-                        ],
-                    },
-                    'Maths': {
-                        'Chapter 1: Integers': [
-                            { id: 1, title: '1. Properties of Operations (Free)', duration: '14:00', free: true },
-                            { id: 2, title: '2. Multiplication and Division', duration: '16:00', free: false },
                         ],
                     },
                 },
@@ -76,36 +87,12 @@
                             { id: 3, title: '3. Graphs and Analysis', duration: '25:10', free: false },
                         ],
                     },
-                    'Chemistry': {
-                        'Chapter 1: Matter': [
-                            { id: 1, title: '1. States of Matter (Free)', duration: '10:00', free: true },
-                            { id: 2, title: '2. Interconversion', duration: '15:00', free: false },
-                        ],
-                    },
-                    'Maths': { 
-                        'Chapter 1: Number Systems': [
-                            { id: 1, title: '1. Rational and Irrational Numbers (Free)', duration: '15:00', free: true },
-                            { id: 2, title: '2. Real Numbers and Exponents', duration: '20:00', free: false },
-                        ],
-                    },
                 },
                 'Class X': {
                     'Physics': {
                         'Chapter 1: Electricity': [
                             { id: 1, title: '1. Electric Charge and Current (Free)', duration: '15:00', free: true },
                             { id: 2, title: '2. Ohm\'s Law and Resistance', duration: '22:00', free: false },
-                        ],
-                    },
-                    'Chemistry': { 
-                        'Chapter 1: Chemical Reactions': [
-                            { id: 1, title: '1. Balancing Equations (Free)', duration: '13:00', free: true },
-                            { id: 2, title: '2. Types of Reactions', duration: '18:00', free: false },
-                        ],
-                    },
-                    'Maths': {
-                        'Chapter 1: Real Numbers': [
-                            { id: 1, title: '1. Euclid\'s Lemma (Free)', duration: '14:00', free: true },
-                            { id: 2, title: '2. Fundamental Theorem', duration: '20:00', free: false },
                         ],
                     },
                 },
@@ -116,24 +103,12 @@
                             { id: 2, title: '2. Projectile Motion', duration: '25:00', free: false },
                         ],
                     },
-                    'Maths': {
-                        'Chapter 1: Sets and Functions': [
-                            { id: 1, title: '1. Set Operations (Free)', duration: '16:00', free: true },
-                            { id: 2, title: '2. Types of Functions', duration: '19:00', free: false },
-                        ],
-                    },
                 },
                 'Class XII': {
                     'Physics': { 
                         'Chapter 1: Electrostatics': [
                             { id: 1, title: '1. Coulomb\'s Law (Free)', duration: '20:00', free: true },
                             { id: 2, title: '2. Electric Field Intensity', duration: '28:00', free: false },
-                        ],
-                    },
-                    'Maths': {
-                        'Chapter 1: Calculus': [
-                            { id: 1, title: '1. Limits and Continuity (Free)', duration: '17:00', free: true },
-                            { id: 2, title: '2. Differentiation Rules', duration: '23:00', free: false },
                         ],
                     },
                 },
@@ -150,14 +125,15 @@
             },
         };
 
-        // --- AUTHENTICATION STATE ---
+        // --- AUTHENTICATION STATE (Now managed by Firestore) ---
         let authState = {
             isLoggedIn: false,
-            freeMinutes: 0, // Minutes earned through ads
-            isPremium: false
+            freeMinutes: 0, 
+            isPremium: false,
+            email: null
         };
-
-        // --- UI/VIEW STATE ---
+        
+        // --- UI/VIEW STATE (Kept the same) ---
         let currentView = 'lecture'; 
         let selection = {
             board: 'CBSE',
@@ -166,10 +142,128 @@
             chapter: 'Chapter 1: Motion',
             lectureIndex: 0 
         };
-        // Payment state for the mock portal
         let selectedPaymentMethod = 'Card';
         
-        // --- Utility Functions ---
+        // --- EXPOSE FUNCTIONS TO GLOBAL SCOPE FOR INLINE HTML EVENTS ---
+        window.closeModal = closeModal;
+        window.showView = showView;
+        window.handleSelectionChange = handleSelectionChange;
+        window.startAdWatch = startAdWatch;
+        window.handlePostAdChoice = handlePostAdChoice;
+        window.handleAdRepeatChoice = handleAdRepeatChoice;
+        window.handleNextLecture = handleNextLecture;
+        window.handleLoginSubmit = handleLoginSubmit;
+        window.handleSubscribe = handleSubscribe;
+        window.updatePaymentInputs = updatePaymentInputs;
+        window.handleAuthButtonClick = handleAuthButtonClick; 
+
+        // --- FIREBASE INITIALIZATION AND AUTH ---
+        async function initializeFirebase() {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase config is missing. Data persistence will not work.");
+                    isAuthReady = true;
+                    return;
+                }
+
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                await setPersistence(auth, browserLocalPersistence);
+
+                // We intentionally ignore `__initial_auth_token` here to force the app to start
+                // in the unauthenticated state so the user can interact with the login gate.
+                await new Promise(resolve => {
+                    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+                        if (user) {
+                            // User logged in via session persistence (after a successful login)
+                            userId = user.uid;
+                            authState.isLoggedIn = true;
+                        } else {
+                            // No user in session. Start unauthenticated.
+                            userId = crypto.randomUUID(); 
+                            authState.isLoggedIn = false;
+                        }
+
+                        // Only set up Firestore data listener if the user is explicitly logged in
+                        if (authState.isLoggedIn) {
+                             firestoreDocRef = doc(db, 'artifacts', appId, 'users', userId, 'settings', 'ad_data');
+                             setupDataListener(); 
+                        } else {
+                            // If unauthenticated, ensure state is clean and ready to render
+                            authState.freeMinutes = 0;
+                            authState.isPremium = false;
+                            isAuthReady = true; 
+                            updateLectureDisplay();
+                            showView('lecture'); // Immediately show the lecture view (unauthenticated)
+                        }
+                        
+                        isAuthReady = true;
+                        updateMinutesDisplay();
+                        resolve();
+                        unsubscribe(); 
+                    });
+                });
+            } catch (error) {
+                console.error("Error during Firebase initialization or sign-in:", error);
+                isAuthReady = true;
+                showView('lecture'); // Fallback to lecture view if initialization fails
+            }
+        }
+
+        // --- FIRESTORE DATA HANDLING ---
+
+        function setupDataListener() {
+            if (!db || !firestoreDocRef) return;
+            
+            // Listen for real-time changes to the user's ad data
+            onSnapshot(firestoreDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    authState.freeMinutes = data.freeMinutes || 0;
+                    authState.isPremium = data.isPremium || false;
+                    authState.isLoggedIn = true; 
+                    authState.email = data.email || null;
+                    console.log(`Data loaded: Minutes=${authState.freeMinutes}, Premium=${authState.isPremium}`);
+                } else {
+                    // Document doesn't exist, create initial state
+                    saveUserState({ freeMinutes: 0, isPremium: false, email: authState.email || null });
+                }
+                updateMinutesDisplay();
+                updateLectureDisplay();
+                
+                if (currentView === 'loading' || currentView === 'gate' || currentView === 'login-form') {
+                    showView('lecture');
+                }
+            }, (error) => {
+                console.error("Firestore snapshot error:", error);
+            });
+        }
+        
+        // Saves the current authState to Firestore
+        async function saveUserState(updates = {}) {
+            if (!firestoreDocRef || !authState.isLoggedIn) {
+                 console.warn("Attempted to save user state but user is not logged in.");
+                 return;
+            }
+            try {
+                const dataToSave = {
+                    freeMinutes: authState.freeMinutes,
+                    isPremium: authState.isPremium,
+                    email: authState.email || null, 
+                    lastUpdated: new Date().toISOString(),
+                    ...updates
+                };
+                
+                await setDoc(firestoreDocRef, dataToSave, { merge: true });
+            } catch (error) {
+                console.error("Error saving state to Firestore:", error);
+                alertMessage("Save Error", "Could not save your progress. Check your connection.");
+            }
+        }
+
+        // --- Utility Functions (Modified for Firebase) ---
 
         function getCurrentLectureSeries() {
             const { board, class: className, subject, chapter } = selection;
@@ -183,6 +277,28 @@
 
         const getContainer = (id) => document.getElementById(id);
 
+        // Custom alert function (as per constraints)
+        function alertMessage(title, message, isError = false) {
+            const modal = getContainer('custom-modal');
+            const modalTitle = getContainer('modal-title');
+            const modalMessage = getContainer('modal-message');
+
+            if (modal && modalTitle && modalMessage) {
+                modalTitle.textContent = title;
+                modalMessage.textContent = message;
+                modal.classList.remove('hidden');
+            } else {
+                console.warn(`[Mock Alert] ${title}: ${message}`);
+            }
+        }
+
+        function closeModal() {
+            const modal = getContainer('custom-modal');
+            if (modal) {
+                modal.classList.add('hidden');
+            }
+        }
+
         // Function to switch the main view
         function showView(viewName) {
             currentView = viewName;
@@ -195,7 +311,6 @@
                 container.classList.remove('hidden');
             }
             
-            // --- FIX: Dynamic update for the Ad Repeat Prompt minutes display ---
             if (viewName === 'ad-repeat-prompt') {
                 const minutesSpan = getContainer('ad-repeat-minutes');
                 if (minutesSpan) {
@@ -203,8 +318,26 @@
                 }
             }
             
-            // Update minutes display whenever views change
             updateMinutesDisplay(); 
+        }
+        
+        // Function called by the header button's onclick (FIXED FOR CLARITY)
+        function handleAuthButtonClick() {
+            if (!isAuthReady) {
+                showView('loading');
+                return;
+            }
+            
+            let targetView;
+            if (authState.isLoggedIn) {
+                targetView = 'ad-menu';
+                console.log('Auth Button Clicked: User is logged in, routing to Ad Menu.');
+            } else {
+                targetView = 'login-form';
+                console.log('Auth Button Clicked: User is not logged in, routing to Login Form.');
+            }
+
+            showView(targetView);
         }
 
         // Updates the minutes display and header button state
@@ -216,63 +349,100 @@
             
             const statusElement = getContainer('auth-status');
              if (statusElement) {
+                // Only show a status if the user is authenticated or premium
                 if (authState.isPremium) {
                     statusElement.innerHTML = `<span class="px-3 py-1 text-sm font-semibold rounded-full bg-emerald-600 text-white">Premium (Ad-Free)</span>`;
                 } else if (authState.isLoggedIn) {
                     statusElement.innerHTML = `<span class="px-3 py-1 text-sm font-semibold rounded-full bg-yellow-600 text-slate-900 ad-timer-glow">Free Access: ${authState.freeMinutes} min</span>`;
                 } else {
-                    statusElement.innerHTML = `<span class="px-3 py-1 text-sm font-semibold rounded-full bg-slate-700 text-slate-300">Guest</span>`;
+                    // Show nothing if not explicitly logged in/premium
+                    statusElement.innerHTML = ``; 
                 }
             }
             
-            // --- Toggle Login/Signup button visibility ---
             const loginButton = getContainer('login-signup-button');
             if (loginButton) {
-                if (authState.isLoggedIn) {
+                // Hide the button if they are Premium and logged in 
+                if (authState.isLoggedIn && authState.isPremium) {
                     loginButton.classList.add('hidden');
                 } else {
                     loginButton.classList.remove('hidden');
+                    // Changed text to reflect the required action
+                    loginButton.textContent = authState.isLoggedIn ? 'Manage Access' : 'Log in / Sign up';
                 }
             }
         }
 
         // --- Auth and Gating Logic ---
 
-        // Called on mock form submission
-        function handleLoginSubmit(event) {
+        // Called on mock form submission (MOCK: just updates the state and saves to Firestore)
+        async function handleLoginSubmit(event) {
             event.preventDefault();
-            // In a real app, this would validate credentials and fetch user data.
-            console.log('Mock Login/Signup Submitted');
+            const email = getContainer('email').value;
+            // In a real app, this would perform actual email/password authentication.
             
-            // MOCK LOGIN SUCCESS: Set state, give initial minutes, and redirect
-            authState.isLoggedIn = true;
-            authState.freeMinutes = 10; // Initial free time
-            showView('ad-menu');
+            // MOCK LOGIN SUCCESS:
+            // This mocks the state change that would happen after a successful login/signup
+            
+            // MOCK: Sign in with the provided initial token now, or sign in anonymously if no token exists.
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    // Fallback if environment token isn't provided (unlikely in Canvas)
+                    // If signInWithCustomToken is used, auth.currentUser will have a uid.
+                }
+                
+                // After successful (mocked) sign-in/auth update:
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                authState.isLoggedIn = true; 
+            } catch (e) {
+                console.error("Mock sign-in error during form submission:", e);
+                alertMessage("Login Failed", "Could not complete sign-in. Please try again.");
+                return;
+            }
+            
+            authState.email = email;
+            authState.freeMinutes = Math.max(authState.freeMinutes, 10); // Guarantee at least 10 min
+            
+            // Re-initialize firestoreDocRef with the new, persistent user
+            firestoreDocRef = doc(db, 'artifacts', appId, 'users', userId, 'settings', 'ad_data');
+            
+            // Save the new logged-in state to the database
+            await saveUserState({ isLoggedIn: true, email: email, freeMinutes: authState.freeMinutes });
+            
+            // Set up listener for real-time updates after mock login
+            setupDataListener();
+
+            alertMessage("Welcome Back!", `Logged in as ${email}. Your progress has been loaded.`);
+            // FIX: Route back to the main lecture view after login, so the "Manage Access" button has a clear action.
+            showView('lecture');
         }
 
-        // Function to handle clicking the 'Next Lecture' button
         function handleNextLecture() {
             const nextIndex = selection.lectureIndex + 1;
             const series = getCurrentLectureSeries();
 
             if (nextIndex >= series.length) {
-                // If no more lectures, just stay here.
                 return;
             }
 
-            // Attempt to switch to the next lecture (which is usually locked)
             handleLectureSelection(nextIndex);
         }
 
         // Core logic for selecting any lecture
         function handleLectureSelection(index) {
+            if (!isAuthReady) {
+                showView('loading');
+                return;
+            }
+            
             const series = getCurrentLectureSeries();
             const newLecture = series[index];
             
             if (!newLecture) return;
 
             if (newLecture.free) {
-                // Always allow free lectures
                 selection.lectureIndex = index;
                 renderDropdowns();
                 updateLectureDisplay();
@@ -283,24 +453,24 @@
             // --- LOCKED LECTURE LOGIC ---
             
             if (authState.isPremium) {
-                // Premium users watch ad-free
                 selection.lectureIndex = index;
                 renderDropdowns();
                 updateLectureDisplay();
                 showView('lecture');
             } else if (!authState.isLoggedIn) {
-                // Not logged in, hit the initial gate
+                // If not logged in and lecture is locked, go to the gate
                 showView('gate');
             } else if (authState.freeMinutes > 0) {
                 // Logged in, time available: consume 1 minute and play
                 authState.freeMinutes -= 1;
+                saveUserState({ freeMinutes: authState.freeMinutes }); 
+                
                 selection.lectureIndex = index;
                 renderDropdowns();
                 updateLectureDisplay();
                 showView('lecture');
-                console.log(`1 minute deducted. Remaining: ${authState.freeMinutes}`);
             } else {
-                // Logged in, but no time left: redirect to ad menu
+                // Logged in, no time available: go to ad menu
                 showView('ad-menu');
             }
             updateMinutesDisplay();
@@ -316,7 +486,6 @@
             
             progressBar.style.width = '0%';
             
-            // Animate progress bar (Tailwind animation utility doesn't work well with time, so using JS)
             let start = null;
             function step(timestamp) {
                 if (!start) start = timestamp;
@@ -335,10 +504,14 @@
 
         // Handle minutes reward and transition to first prompt
         function handleAdComplete() {
-            // Award 15 minutes
             const minutesEarned = 15;
             authState.freeMinutes += minutesEarned;
+            
+            // --- SAVE NEW MINUTES TO FIRESTORE ---
+            saveUserState({ freeMinutes: authState.freeMinutes }); 
+            
             updateMinutesDisplay();
+            alertMessage("Success!", `You earned ${minutesEarned} minutes! Total time: ${authState.freeMinutes} min.`);
             showView('ad-workflow-prompt');
         }
 
@@ -347,7 +520,6 @@
             if (action === 'subscribe') {
                 showView('payment-portal');
             } else {
-                // Continue free experience -> show ad repeat prompt
                 showView('ad-repeat-prompt');
             }
         }
@@ -355,21 +527,24 @@
         // Handles the ad repeat choice (YES/NO)
         function handleAdRepeatChoice(wantsAd) {
             if (wantsAd) {
-                startAdWatch(); // YES
+                startAdWatch(); 
             } else {
-                // NO, return to the main lecture viewer or ad menu
                 showView('ad-menu');
             }
         }
         
         // Mock subscription completion
-        function handleSubscribe() {
+        async function handleSubscribe() {
             const selectedMethod = document.querySelector('input[name="paymentMethod"]:checked')?.value || 'Card';
             
             authState.isPremium = true;
-            authState.isLoggedIn = true; // Ensure logged in state is true
-            authState.freeMinutes = 99999; // Essentially unlimited
-            alertMessage('Subscription Successful!', `Subscription processed using ${selectedMethod}. You now have ad-free, unlimited access. Redirecting to lectures.`);
+            authState.isLoggedIn = true; 
+            authState.freeMinutes = 99999; 
+            
+            // --- SAVE PREMIUM STATUS TO FIRESTORE ---
+            await saveUserState({ isPremium: true, freeMinutes: authState.freeMinutes });
+
+            alertMessage('Subscription Successful!', `Subscription processed using ${selectedMethod}. You now have ad-free, unlimited access.`);
             showView('lecture');
         }
 
@@ -386,16 +561,7 @@
         }
 
 
-        // Custom alert function (as per constraints)
-        function alertMessage(title, message) {
-            // Simple console log for now, can be expanded to a modal
-            console.warn(`[Mock Alert] ${title}: ${message}`);
-            // In a real application, a custom modal UI would be shown here.
-            // Since we can't use alert(), we rely on console and a simple mock.
-        }
-
-
-        // --- Dropdown and UI Rendering Logic ---
+        // --- Dropdown and UI Rendering Logic (Unchanged) ---
 
         function handleSelectionChange(level, value) {
             let newSelection = { ...selection };
@@ -415,10 +581,9 @@
                     break;
                 case 'lectureIndex':
                     handleLectureSelection(parseInt(value, 10)); // Use new selection handler
-                    return; // Stop default rendering loop
+                    return; 
             }
 
-            // Auto-select first valid option for dependent fields
             if (level === 'board') {
                 const firstClass = Object.keys(MOCK_COURSES[newSelection.board] || {})[0];
                 newSelection.class = firstClass || null;
@@ -436,7 +601,6 @@
                 newSelection.chapter = firstChapter || null;
             }
             
-            // Ensure default is Lecture 0
             newSelection.lectureIndex = 0;
 
             selection = newSelection;
@@ -445,7 +609,6 @@
             showView('lecture');
         }
 
-        // Update the main video content area
         function updateLectureDisplay() {
             const currentLecture = getCurrentLecture();
             const titleElement = document.getElementById('video-title');
@@ -480,6 +643,8 @@
                 message = "You are a Premium user. Watching ad-free.";
             } else if (authState.isLoggedIn && authState.freeMinutes > 0) {
                  message = `Viewing locked content. 1 minute deducted from your ad-earned time. **Remaining: ${authState.freeMinutes} minutes.**`;
+            } else if (authState.isLoggedIn && authState.freeMinutes === 0) {
+                 message = "This lecture is locked. You need to earn time by watching an ad first.";
             } else {
                  message = "This lecture is locked. Log in to watch or earn time by watching ads.";
             }
@@ -500,7 +665,6 @@
             }
         }
         
-        // Renders all 5 dropdowns based on the current selection state
         function renderDropdowns() {
             const container = document.getElementById('selector-container');
             if (!container) return;
@@ -508,7 +672,7 @@
             const { board, class: className, subject, chapter, lectureIndex } = selection;
 
             const boards = Object.keys(MOCK_COURSES);
-            const classes = board ? Object.keys(MOCK_COURSES[board] || {}) : [];
+            const classes = board ? Object.keys(MOCK_COURSES[board]?.[className] || {}) : [];
             const subjects = board && className ? Object.keys(MOCK_COURSES[board]?.[className] || {}) : [];
             const chapters = board && className && subject ? Object.keys(MOCK_COURSES[board]?.[className]?.[subject] || {}) : [];
             const lectures = getCurrentLectureSeries();
@@ -521,7 +685,6 @@
                 ${createSelect(lectures, lectureIndex, 'Lecture', 'lectureIndex', !!chapter && lectures.length > 0, 'Select Lecture')}
             `;
 
-            // Attach event listeners after rendering
             ['board', 'class', 'subject', 'chapter'].forEach(level => {
                 const element = document.getElementById(level);
                 if (element) {
@@ -535,7 +698,6 @@
             }
         }
         
-        // Helper function to create a dropdown HTML structure
         function createSelect(options, currentValue, label, id, isEnabled, placeholder) {
             const isDisabled = !isEnabled && id !== 'board';
             let optionTags = options.map((option, index) => {
@@ -548,7 +710,6 @@
                     value = index;
                     display = option.title;
                     const isLocked = !option.free;
-                    // Locked lectures for non-premium users
                     if (isLocked && !authState.isPremium) {
                         lockedIndicator = ' (Locked)';
                     }
@@ -559,7 +720,6 @@
                     isCurrent = true;
                 }
                 
-                // Styling based on locked status
                 const optionClass = (id === 'lectureIndex' && !options[index].free && !authState.isPremium) ? 'text-red-400' : 'text-slate-100';
 
                 return `<option value="${value}" ${isCurrent ? 'selected' : ''} class="${optionClass}">
@@ -580,12 +740,29 @@
 
         // Initial setup on window load
         window.onload = function() {
-            renderDropdowns();
-            updateLectureDisplay();
-            updateMinutesDisplay();
-            showView('lecture'); // Start on the lecture view
+            // Start the loading screen while Firebase initializes
+            showView('loading'); 
+            
+            // Initialization steps
+            initializeFirebase().then(() => {
+                // The initializeFirebase function now handles calling showView('lecture') if not logged in.
+                renderDropdowns();
+                updateLectureDisplay();
+                updateMinutesDisplay();
+            });
         };
     </script>
+
+    <!-- Custom Modal Structure -->
+    <div id="custom-modal" class="modal hidden">
+        <div class="modal-content text-center">
+            <h3 id="modal-title" class="text-2xl font-bold text-white mb-3"></h3>
+            <p id="modal-message" class="text-slate-300 mb-6"></p>
+            <button onclick="closeModal()" class="px-6 py-2 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition duration-150 shadow-md">
+                OK
+            </button>
+        </div>
+    </div>
 
     <!-- Header / Navbar -->
     <header class="bg-slate-950 shadow-lg p-4 sticky top-0 z-10">
@@ -593,10 +770,9 @@
             <h1 class="text-xl font-bold text-indigo-400">Course Viewer</h1>
             <div class="flex items-center space-x-4">
                 <div id="auth-status">
-                    <!-- Status updated by updateMinutesDisplay() -->
+                    <!-- Status updated by updateMinutesDisplay() (no 'Guest' status anymore) -->
                 </div>
-                <!-- Login/Sign up button now has an ID and toggles visibility based on authState -->
-                <button id="login-signup-button" onclick="showView(authState.isLoggedIn ? 'ad-menu' : 'login-form')" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-md transition duration-150">
+                <button id="login-signup-button" onclick="handleAuthButtonClick()" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-md transition duration-150">
                     Log in / Sign up
                 </button>
             </div>
@@ -605,6 +781,14 @@
 
     <!-- Main Content Area -->
     <main class="flex-grow p-4 md:p-8 max-w-7xl mx-auto w-full flex flex-col gap-6">
+        
+        <!-- 0. Loading Container -->
+        <div id="loading-container" class="space-y-6 hidden h-full flex items-center justify-center flex-grow">
+            <div class="text-center">
+                <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-indigo-500 mx-auto mb-4"></div>
+                <p class="text-xl text-indigo-300">Connecting to database and loading user state...</p>
+            </div>
+        </div>
 
         <!-- DROPDOWN SELECTORS -->
         <div class="bg-slate-800 p-6 rounded-xl shadow-lg border border-slate-700">
@@ -668,7 +852,7 @@
                         <input type="tel" id="phone" class="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-white" placeholder="e.g., +91 98765 43210" required>
                     </div>
                     <div class="mb-6">
-                        <label for="password" class="block text-sm font-medium text-slate-400 mb-2">Password</label>
+                        <label for="password" class="block text-sm font-medium text-slate-400 mb-2">Password (Mock)</label>
                         <input type="password" id="password" class="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-white" placeholder="••••••••" required>
                     </div>
                     <button type="submit" class="w-full px-6 py-3 bg-emerald-600 text-white font-bold text-lg rounded-lg hover:bg-emerald-700 transition duration-150 shadow-lg shadow-emerald-500/30">
@@ -739,7 +923,7 @@
         <!-- 7. Post-Ad Prompt 2: Ad Repeat -->
         <div id="ad-repeat-prompt-container" class="space-y-6 hidden h-full flex items-center justify-center">
             <div class="bg-slate-800 p-10 md:p-16 rounded-xl shadow-2xl max-w-lg w-full text-center border-t-4 border-yellow-500">
-                <svg class="w-16 h-16 text-yellow-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                <svg class="w-16 h-16 text-yellow-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                 <h2 class="text-3xl font-bold text-white mb-4">Time Remaining: <span id="ad-repeat-minutes" class="text-yellow-400">0</span> min</h2>
                 <p class="text-xl text-slate-300 mb-6">
                     Do you want to play another ad to stack more minutes?
